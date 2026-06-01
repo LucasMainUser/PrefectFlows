@@ -1,0 +1,11 @@
+artifacts
+tests
+
+__pycache__
+
+*.egg-info
+*.ini
+
+.venv
+.env
+.env.local
