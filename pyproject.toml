@@ -12,8 +12,7 @@ dependencies = [
     "requests==2.34.2",
     "polars[excel]==1.41.0",
     "xlsxwriter==3.2.9",
-    "SQLAlchemy==2.0.50",
-    "psycopg2-binary==2.9.12",
+    "psycopg[binary]==3.2.3",
     "python-dotenv==1.2.2",
     "prefect==3.7.2"
 ]
