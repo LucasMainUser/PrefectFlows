@@ -9,35 +9,35 @@ from application.envtools import load_global_environment_prefect
 from core import Environment, extract_sinapi_data_to_postgres
 
 class FlowRunConfigurations(BaseModel):
-    start: tuple[int, int] = Field(
+    start: str = Field(
         default=None, 
         title='Data Inicio', 
         description=(
-            'Mês/Ano inicial para ler e extrair dados do SINAPI.' 
-            'Exemplo: "05/2025" para março de 2025.'
-            'Deve ser informado junto com um periodo final.'
+            'Mês/Ano inicial para ler e extrair dados do SINAPI. ' 
+            'Exemplo: "05/2025" para março de 2025. '
+            'Deve ser informado junto com um periodo final. '
             'Se vazio, utiliza o mês anterior.' 
         )
     )
-    finish: tuple[int, int] = Field(
+    finish: str = Field(
         default=None,  
         title='Data Fim', 
         description=(
-            'Mês/Ano inicial para ler e extrair dados do SINAPI.' 
-            'Exemplo: "05/2025" para março de 2025.'
-            'Deve ser informado junto com um periodo inicial.'
+            'Mês/Ano inicial para ler e extrair dados do SINAPI. ' 
+            'Exemplo: "05/2025" para março de 2025. '
+            'Deve ser informado junto com um periodo inicial. '
             'Se vazio, utiliza o mês anterior.' 
         )
     )
 
 
 @flow
-def prefect_flow(configs: Optional[FlowRunConfigurations]=None) -> State:
-    if configs is None:
-        configs = FlowRunConfigurations()
-
-    start = configs.start
-    finish = configs.finish
+def prefect_flow(configurations: Optional[FlowRunConfigurations]=None) -> State:
+    if configurations is None:
+        configurations = FlowRunConfigurations()
+    
+    start = configurations.start
+    finish = configurations.finish
 
     global_environment = load_global_environment_prefect(allow_empty_values=False)
     schema = Variable.get('sinapi_database_schema')
@@ -56,8 +56,8 @@ def prefect_flow(configs: Optional[FlowRunConfigurations]=None) -> State:
 
 def main() -> None:
     config = FlowRunConfigurations(
-        start=(2026, 4),
-        finish=(2026, 4)
+        start="05/2025",
+        finish="06/2026"
     )
     prefect_flow(config)
 

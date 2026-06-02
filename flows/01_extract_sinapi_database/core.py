@@ -120,11 +120,11 @@ def transform_year_month(data: YearMonthLike, /) -> YearMonth:
     december = 12
 
     if isinstance(data, tuple):
-        data = YearMonth(*data)
+        data = YearMonth(*map(int, data))
     
     if isinstance(data, str):
         month, year = data.split('/', maxsplit=1)
-        data = YearMonth(year, month)
+        data = YearMonth(int(year), int(month))
 
     if not isinstance(data, YearMonth):
         raise ValueError(f'Invalid year-month input of type {type_name(data)!r}')
