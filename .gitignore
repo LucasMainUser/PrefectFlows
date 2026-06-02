@@ -6,6 +6,7 @@ __pycache__
 *.egg-info
 *.ini
 
+.github
 .venv
 .env
 .env.local
