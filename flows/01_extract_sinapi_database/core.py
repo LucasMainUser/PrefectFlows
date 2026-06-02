@@ -6,7 +6,6 @@ from typing import (
     Mapping, 
     TypeAlias
 )
-from io import BytesIO
 from pathlib import Path
 from datetime import date
 from dataclasses import dataclass
@@ -106,10 +105,11 @@ class Environment(SupportsGlobalEnvironment):
     schema: str
     global_env: GlobalEnvironment
     
-PathLike:       TypeAlias = str | Path
-Year:           TypeAlias = int
-Month:          TypeAlias = int
-YearMonthLike:  TypeAlias = YearMonth | tuple[Year, Month]
+PathLike:           TypeAlias = str | Path
+Year:               TypeAlias = int
+Month:              TypeAlias = int
+LiteralMonthYear:   TypeAlias = str
+YearMonthLike:      TypeAlias = YearMonth | tuple[Year, Month] | LiteralMonthYear
 
 
 
@@ -122,6 +122,10 @@ def transform_year_month(data: YearMonthLike, /) -> YearMonth:
     if isinstance(data, tuple):
         data = YearMonth(*data)
     
+    if isinstance(data, str):
+        month, year = data.split('/', maxsplit=1)
+        data = YearMonth(year, month)
+
     if not isinstance(data, YearMonth):
         raise ValueError(f'Invalid year-month input of type {type_name(data)!r}')
 

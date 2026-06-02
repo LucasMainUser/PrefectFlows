@@ -12,19 +12,24 @@ class FlowRunConfigurations(BaseModel):
     start: tuple[int, int] = Field(
         default=None, 
         title='Data Inicio', 
-        description='''
-        (Ano, Mês) inicial para ler e extrair dados do SINAPI. Exemplo: (2025, 3) para março de 2025.
-        Deve ser informado junto com um periodo final. Se vazio, utiliza o mês anterior. 
-        '''
+        description=(
+            'Mês/Ano inicial para ler e extrair dados do SINAPI.' 
+            'Exemplo: "05/2025" para março de 2025.'
+            'Deve ser informado junto com um periodo final.'
+            'Se vazio, utiliza o mês anterior.' 
+        )
     )
     finish: tuple[int, int] = Field(
         default=None,  
         title='Data Fim', 
-        description='''
-        (Ano, Mês) final para ler e extrair dados do SINAPI. Exemplo: (2025, 3) para março de 2025.
-        Deve ser informado junto com um periodo inicial. Se vazio, utiliza o mês anterior. 
-        '''
+        description=(
+            'Mês/Ano inicial para ler e extrair dados do SINAPI.' 
+            'Exemplo: "05/2025" para março de 2025.'
+            'Deve ser informado junto com um periodo inicial.'
+            'Se vazio, utiliza o mês anterior.' 
+        )
     )
+
 
 @flow
 def prefect_flow(configs: Optional[FlowRunConfigurations]=None) -> State:
