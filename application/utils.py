@@ -40,8 +40,8 @@ def clear_text(value: str, /) -> str:
 def fill_whitespaces(value: str, /) -> str:
     return UNDERLINE.join(str(value).strip().split())
 
-def generate_timestamp() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+def generate_timestamp() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
 
 def generate_timehex_token(nbytes: int, /) -> str:
     token_time = time.time_ns()

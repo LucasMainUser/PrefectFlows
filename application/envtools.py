@@ -26,6 +26,10 @@ class GlobalEnvironment:
     postgres_port: Optional[int]
     postgres_database_name: Optional[str]
 
+    s3_access_key: Optional[str]
+    s3_access_secret: Optional[str]
+    s3_service_endpoint: Optional[str]
+
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any], /, allow_empty_values: bool=True) -> Self:
         check_environment_values(data, allow_empty_values=allow_empty_values)
@@ -36,12 +40,19 @@ class GlobalEnvironment:
         postgres_port           = data['POSTGRES_PORT']
         postgres_database_name  = data['POSTGRES_DATABASE_NAME']
 
+        s3_access_key           = data['S3_ACCESS_KEY']
+        s3_access_secret        = data['S3_ACCESS_SECRET']
+        s3_service_endpoint     = data['S3_SERVICE_ENDPOINT']
+        
         instance = GlobalEnvironment(
             postgres_user=cast(postgres_user, str, ignore_null=True),
             postgres_password=cast(postgres_password, str, ignore_null=True),
             postgres_server=cast(postgres_server, str, ignore_null=True),
             postgres_port=cast(postgres_port, int, ignore_null=True),
-            postgres_database_name=cast(postgres_database_name, str, ignore_null=True)
+            postgres_database_name=cast(postgres_database_name, str, ignore_null=True),
+            s3_access_key=cast(s3_access_key, str, ignore_null=True),
+            s3_access_secret=cast(s3_access_secret, str, ignore_null=True),
+            s3_service_endpoint=cast(s3_service_endpoint, str, ignore_null=True)
         )
         return instance
 
