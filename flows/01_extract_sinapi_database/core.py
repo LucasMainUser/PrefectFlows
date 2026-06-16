@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from typing import (
+    Any,
+    TypeGuard,
     Optional, 
     NamedTuple,
     Mapping, 
+    Iterator,
     TypeAlias
 )
+from io import BytesIO
 from pathlib import Path
 from datetime import date
 from dataclasses import dataclass
-
-import psycopg as ps
-import psycopg.sql as sql
 
 import polars as pl
 
@@ -21,7 +22,7 @@ from application.envtools import (
     load_global_environment_file,
     load_relative_environment_file
 )
-from application.database import postgres_connection_string, create_schema
+from application.aws3 import S3Connection
 from application.tables import PolarsLike, transform_dataframe
 from application.utils import (
     cache,
@@ -43,42 +44,30 @@ from data_models import (
 from sinapi_api import is_available_sinapi_data, get_link_to_sinapi_table
 
 
+URLPATH_SEPARATOR:          str = '/'
 LOCAL_ENVIRONMENT_FILEPATH: str = '.env.local'
 
-@cache
-def sinapi_sql_schema() -> str:
-    schema = '''
-    "CREATED_AT"    TIMESTAMP WITH TIME ZONE NOT NULL,
-    "ID"            TEXT NOT NULL,
-    "GROUP"         TEXT,
-    "CODE"          TEXT,
-    "DESCRIPTION"   TEXT,
-    "UNIT"          TEXT,
-    "PRICING"       TEXT,
-    "UF"            TEXT,
-    "STATE"         TEXT,
-    "CITY"          TEXT,
-    "VALUE_TYPE"    TEXT,
-    "VALUE"         DOUBLE PRECISION,
-    "YEAR"          INT NOT NULL,
-    "MONTH"         INT NOT NULL,
-    "YEAR_MONTH"    INT NOT NULL
-    '''
-    return schema.strip()
 
-class SQLTableDefinition(NamedTuple):
+class TableDefinition(NamedTuple):
     name: str
-    schema: str
+
+
+def is_table_definition(value: Any, /) -> TypeGuard[TableDefinition]:
+    return isinstance(value, TableDefinition)
 
 # NOTE: Sync these names in the views-query file
 class SINAPI_Tables:
-    COMPOSITIONS_CCD = SQLTableDefinition(name='compositions_ccd', schema=sinapi_sql_schema())
-    COMPOSITIONS_CSD = SQLTableDefinition(name='compositions_csd', schema=sinapi_sql_schema())
-    COMPOSITIONS_CSE = SQLTableDefinition(name='compositions_cse', schema=sinapi_sql_schema())
-    MATERIALS_SERVICES_ICD = SQLTableDefinition(name='materials_services_icd', schema=sinapi_sql_schema())
-    MATERIALS_SERVICES_ISD = SQLTableDefinition(name='materials_services_isd', schema=sinapi_sql_schema())
-    MATERIALS_SERVICES_ISE = SQLTableDefinition(name='materials_services_ise', schema=sinapi_sql_schema())
+    COMPOSITIONS_CCD = TableDefinition(name='compositions_ccd')
+    COMPOSITIONS_CSD = TableDefinition(name='compositions_csd')
+    COMPOSITIONS_CSE = TableDefinition(name='compositions_cse')
+    MATERIALS_SERVICES_ICD = TableDefinition(name='materials_services_icd')
+    MATERIALS_SERVICES_ISD = TableDefinition(name='materials_services_isd')
+    MATERIALS_SERVICES_ISE = TableDefinition(name='materials_services_ise')
 
+
+    @classmethod
+    def iter_definitions(cls) -> Iterator[TableDefinition]:
+        yield from filter(is_table_definition, vars(cls).values())
 
 
 class YearMonth(NamedTuple):
@@ -103,6 +92,7 @@ class YearMonth(NamedTuple):
 @dataclass(slots=True, frozen=True)
 class Environment(SupportsGlobalEnvironment):
     schema: str
+    bucket_name: str
     global_env: GlobalEnvironment
     
 PathLike:           TypeAlias = str | Path
@@ -112,7 +102,8 @@ LiteralMonthYear:   TypeAlias = str
 YearMonthLike:      TypeAlias = YearMonth | tuple[Year, Month] | LiteralMonthYear
 
 
-
+def with_schema(schema: str, name: str, /) -> str:
+    return f'{schema}.{name}'
 
 def transform_year_month(data: YearMonthLike, /) -> YearMonth:
     jesus_birthday = 0
@@ -140,50 +131,7 @@ def transform_year_month(data: YearMonthLike, /) -> YearMonth:
 
     return data
 
-def database_insert_tables(
-        tables: Mapping[SQLTableDefinition, PolarsLike], 
-        connection: ps.Connection,
-        schema: Optional[str]=None,
-        logger: Optional[LogFunction]=None
-    ) -> None:
-    
-    logger = resolve_logger(logger)
-    logger('Starting writing tables, waiting...')
-    
-    with connection.transaction():
-        if schema is not None:
-            create_schema(schema, connection, commit=False)
-
-        for table_definition, data in tables.items():
-            name = str(table_definition.name)
-            table_sql_schema = sql.SQL(table_definition.schema)
-            
-            dataframe = transform_dataframe(data)
-            
-            table_name = sql.Identifier(name)
-
-            if schema is not None:
-                table_name = sql.Identifier(schema, name)
-        
-            column_names = sql.SQL(', ').join(
-                sql.Identifier(column_name) for column_name in dataframe.columns)
-
-            copy_query      = sql.SQL('COPY {} ({}) FROM STDIN WITH (FORMAT csv)').format(table_name, column_names)
-            creation_query  = sql.SQL('CREATE TABLE IF NOT EXISTS {} ({})').format(table_name, table_sql_schema)    
-            
-            connection.execute(creation_query)
-            
-            with connection.cursor().copy(copy_query) as copy:
-                for chunk in dataframe.iter_slices(50_000):
-                    copy.write(
-                        chunk.write_csv(include_header=False).encode('utf-8')
-                    )
-            logger(f'Written {name!s} successfully ({dataframe.height} rows)') 
-
-    logger(f'All tables append successfully, commiting.') 
-    
-
-def resolve_sinapi_tables(year: int, month: int, /, logger: Optional[LogFunction]=None) -> dict[SQLTableDefinition, pl.DataFrame]:
+def read_all_sinapi_tables(year: int, month: int, /, logger: Optional[LogFunction]=None) -> dict[TableDefinition, pl.DataFrame]:
     logger = resolve_logger(logger)
     logger(f'Loading SINAPI tables for {month:02d}/{year}.')
 
@@ -194,7 +142,7 @@ def resolve_sinapi_tables(year: int, month: int, /, logger: Optional[LogFunction
     logger(f'SINAPI source link: {sinapi_link}')
 
     logger(f'Extracting for {month:02d}/{year}, this may take a while ...')
-    tables: dict[SQLTableDefinition, pl.DataFrame] = {
+    tables: dict[TableDefinition, pl.DataFrame] = {
         SINAPI_Tables.COMPOSITIONS_CCD: load_compositions_cost_CCD(year, month),
         SINAPI_Tables.COMPOSITIONS_CSD: load_compositions_cost_CSD(year, month),
         SINAPI_Tables.COMPOSITIONS_CSE: load_compositions_cost_CSE(year, month),
@@ -206,6 +154,85 @@ def resolve_sinapi_tables(year: int, month: int, /, logger: Optional[LogFunction
 
     logger(f'All {count} tables loaded successfully.')
     return tables
+
+def fetch_sinapi_database(s3_connection: S3Connection, environment: Environment, /, logger: Optional[LogFunction]=None) -> dict[TableDefinition, pl.DataFrame]:
+    logger = resolve_logger(logger)
+    logger('Reading database from CloudFlare (S3-Service) parquet-files')
+
+    database: dict[TableDefinition, pl.DataFrame] = {}
+
+    for definition in SINAPI_Tables.iter_definitions():
+        dataframe = pl.DataFrame()
+        table_name = with_schema(environment.schema, definition.name)
+
+        logger(f'Loading - {table_name!r}')
+
+        if s3_connection.file_exists(environment.bucket_name, table_name):      
+            parquet_buffer = s3_connection.read_file_buffer(environment.bucket_name, table_name)
+            dataframe = pl.read_parquet(parquet_buffer)
+        
+        database[definition] = dataframe
+
+    logger('CloudFlare database ready!')
+    return database
+
+def insert_data(table: PolarsLike, definition: TableDefinition, database: Mapping[TableDefinition, PolarsLike], /) -> dict[TableDefinition, pl.DataFrame]:
+    database = {
+        key: transform_dataframe(data) for key, data in database.items() 
+    }
+    if definition not in database:
+        database[definition] = transform_dataframe(table)
+        return database
+    
+    database[definition] = pl.concat((
+        database[definition], transform_dataframe(table)
+    ))
+    return database
+
+def mount_latests(tables: Mapping[TableDefinition, PolarsLike], /, logger: Optional[LogFunction]=None) -> dict[TableDefinition, pl.DataFrame]:
+    logger = resolve_logger(logger)
+    logger('Start mounting latests')
+
+    latests: dict[TableDefinition, pl.DataFrame] = {}
+
+    for definition, data in tables.items():
+        latests_table_name = f'{definition.name}_latests'
+        logger(f'Extracting latests records from {definition.name!r} to {latests_table_name!r}')
+
+        latest_definition = TableDefinition(name=latests_table_name)
+
+        dataframe = transform_dataframe(data)
+        dataframe = dataframe.with_columns(
+            pl.col('CREATED_AT').max().over('YEAR_MONTH').alias('LATEST_CREATED')
+        )
+        dataframe = dataframe.filter(
+            pl.col('CREATED_AT') == pl.col('LATEST_CREATED')
+        )
+        dataframe = dataframe.drop('LATEST_CREATED')
+
+        latests[latest_definition] = dataframe
+
+    logger('Finished mounting latest tables')
+    return latests
+
+def push_sinapi_database(s3_connection: S3Connection, environment: Environment, tables: Mapping[TableDefinition, PolarsLike], /, logger: Optional[LogFunction]=None) -> None:
+    logger = resolve_logger(logger)
+    logger('Start pushing sinapi database')
+
+    for definition, data in tables.items():
+        table_name = with_schema(environment.schema, definition.name)
+        buffer = BytesIO()
+
+        logger(f'Writing {table_name!r}')
+
+        transform_dataframe(data).write_parquet(buffer)
+        buffer.seek(0)
+
+        s3_connection.write_file(
+            bucket_name=environment.bucket_name, key=table_name, content=buffer)
+
+    logger('Finished pushing sinapi database')
+
 
 def resolve_periods(start: YearMonthLike | None, finish: YearMonthLike | None, /, logger: Optional[LogFunction]=None) -> list[YearMonth]:
     logger = resolve_logger(logger)
@@ -248,11 +275,15 @@ def resolve_environment(environment: Optional[Environment]=None, /, logger: Opti
         global_environment = load_global_environment_file(allow_empty_values=True)
         
         values = load_relative_environment_file(__file__, LOCAL_ENVIRONMENT_FILEPATH, allow_empty_values=False)
+        
         schema = values['SCHEMA']
+        bucket_name = values['S3_BUCKET_NAME']
 
         environment = Environment(
-            schema=schema, global_env=global_environment)
-
+            schema=str(schema), 
+            bucket_name=str(bucket_name), 
+            global_env=global_environment)
+        
     if not isinstance(environment, Environment):
         raise ValueError('environment must be an instance of Environment')
     
@@ -260,32 +291,29 @@ def resolve_environment(environment: Optional[Environment]=None, /, logger: Opti
         raise ValueError('environment schema must not be None')
 
     if any({
-        environment.global_env.postgres_user is None,
-        environment.global_env.postgres_password is None,
-        environment.global_env.postgres_port is None,
-        environment.global_env.postgres_server is None,
-        environment.global_env.postgres_database_name is None,
+        environment.global_env.s3_access_key is None,
+        environment.global_env.s3_access_secret is None,
+        environment.global_env.s3_service_endpoint is None,
 
     }):
-        raise ValueError('Incomplete PostgreSQL configuration in environment')    
+        raise ValueError('Incomplete S3 configuration in environment')    
     
     logger('Environment successfully resolved')
     return environment
 
-def resolve_database_connection_string(environment: Environment, /, logger: Optional[LogFunction]=None) -> str:
+def resolve_s3_connection(environment: Environment, logger: Optional[LogFunction]=None) -> S3Connection:
     logger = resolve_logger(logger)
-    logger('Writing database connection string')
-    connection_string = postgres_connection_string(
-        user=environment.global_env.postgres_user,
-        password=environment.global_env.postgres_password,
-        port=environment.global_env.postgres_port,
-        server=environment.global_env.postgres_server,
-        database_name=environment.global_env.postgres_database_name
-    )
-    logger('Database connection string done!')
-    return connection_string
+    logger('Start resolving S3 connection')
 
-def extract_sinapi_data_to_postgres(
+    connection = S3Connection(
+        service_endpoint=environment.global_env.s3_service_endpoint,
+        access_key=environment.global_env.s3_access_key,
+        access_secret=environment.global_env.s3_access_secret
+    )
+    logger('S3 connection created')
+    return connection
+
+def extract_sinapi_data(
         start: Optional[YearMonthLike]=None,
         finish: Optional[YearMonthLike]=None,
         environment: Optional[Environment]=None,
@@ -295,21 +323,28 @@ def extract_sinapi_data_to_postgres(
     logger = resolve_logger(logger)
     periods = resolve_periods(start, finish, logger=logger)
     environment = resolve_environment(environment, logger=logger)
-    connection_string = resolve_database_connection_string(environment, logger=logger)
+    s3_connection = resolve_s3_connection(environment, logger=logger)
 
-    # NOTE: Generate timestamp and ID ("hash") for entire process
+    if not s3_connection.bucket_exists(environment.bucket_name):
+        raise RuntimeError(f'S3 bucket {environment.bucket_name!r} does not exist or is not accessible')
+
+    database = fetch_sinapi_database(s3_connection, environment, logger=logger)
+    
+    # NOTE: Generate timestamp and ID ('hash') for entire process
     token = generate_timehex_token(4)
     timestamp = generate_timestamp()
     
     total = len(periods)
-    with ps.connect(connection_string) as connection:
-        for index, period in enumerate(periods, start=1):
-            logger(f'{index}/{total} - Processing period {period.display}.')
-            
-            tables = resolve_sinapi_tables(period.year, period.month, logger=logger)
 
-            # NOTE: Here the timestamp and ID are overwrited
-            for key, dataframe in tables.items():
-                tables[key] = add_hash_columns(dataframe, token=token, timestamp=timestamp)
-            
-            database_insert_tables(tables, connection, schema=environment.schema, logger=logger)            
+    for index, period in enumerate(periods, start=1):
+        logger(f'{index}/{total} - Processing period {period.display}.')
+        
+        tables = read_all_sinapi_tables(period.year, period.month, logger=logger)
+
+        # NOTE: Here timestamp and ID are overwrited
+        for key, dataframe in tables.items():
+            dataframe = add_hash_columns(dataframe, token=token, timestamp=timestamp)
+            database = insert_data(dataframe, key, database)
+
+    latests = mount_latests(database, logger=logger)
+    push_sinapi_database(s3_connection, environment, {**database, **latests}, logger=logger)

@@ -6,7 +6,7 @@ from prefect.states import State
 from prefect.variables import Variable
 
 from application.envtools import load_global_environment_prefect
-from core import Environment, extract_sinapi_data_to_postgres
+from core import Environment, extract_sinapi_data
 
 class FlowRunConfigurations(BaseModel):
     start: str = Field(
@@ -23,7 +23,7 @@ class FlowRunConfigurations(BaseModel):
         default=None,  
         title='Data Fim', 
         description=(
-            'Mês/Ano inicial para ler e extrair dados do SINAPI. ' 
+            'Mês/Ano final para ler e extrair dados do SINAPI. ' 
             'Exemplo: "05/2025" para março de 2025. '
             'Deve ser informado junto com um periodo inicial. '
             'Se vazio, utiliza o mês anterior.' 
@@ -41,25 +41,25 @@ def prefect_flow(configurations: Optional[FlowRunConfigurations]=None) -> State:
 
     global_environment = load_global_environment_prefect(allow_empty_values=False)
     schema = Variable.get('sinapi_database_schema')
+    bucket_name = Variable.get('sinapi_database_s3_bucket_name')
     
     environment = Environment(
-        schema=schema, global_env=global_environment)
+        schema=str(schema), 
+        bucket_name=str(bucket_name), 
+        global_env=global_environment)
     
     logger = get_run_logger()
-
-    extract_sinapi_data_to_postgres(
+    
+    extract_sinapi_data(
         start=start, 
         finish=finish, 
         environment=environment, 
-        logger=logger.info
-    )
+        logger=logger.info)
 
 def main() -> None:
-    config = FlowRunConfigurations(
-        start="05/2025",
-        finish="06/2026"
-    )
-    prefect_flow(config)
+    start='05/2026'
+    finish='05/2026'
+    extract_sinapi_data(start=start, finish=finish, logger=print)
 
 if __name__ == '__main__':
     main()

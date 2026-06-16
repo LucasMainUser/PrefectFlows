@@ -1,4 +1,5 @@
 from typing import Optional
+from datetime import datetime
 
 import polars as pl
 
@@ -6,8 +7,8 @@ from application.utils import fill_whitespaces, generate_timehex_token, generate
 from application.tables import (
     PolarsLike,
     transform_dataframe,
-    skip_rows, 
-    first_row_as_header, 
+    skip_rows,
+    first_row_as_header,
     transform_headers,
     any_of,
     replace_whitespaces,
@@ -81,7 +82,7 @@ MAP_STATE_CITY = {
 
 
 DATA_MODEL_MATERIALS_SERVICES = {
-    'CREATED_AT':   pl.String,
+    'CREATED_AT':   pl.Datetime,
     'ID':           pl.String,
     'GROUP':        pl.String,
     'CODE':         pl.String,
@@ -100,37 +101,41 @@ DATA_MODEL_MATERIALS_SERVICES = {
 
 DATA_MODEL_COMPOSITIONS = DATA_MODEL_MATERIALS_SERVICES
 
+
 def add_time_columns(data: PolarsLike, year: int, month: int, /) -> pl.DataFrame:
     dataframe = transform_dataframe(data)
-    dataframe= dataframe.with_columns(
-        MONTH       = pl.lit(month),
-        YEAR        = pl.lit(year),
-        YEAR_MONTH  = pl.lit(100 * year + month)
+    dataframe = dataframe.with_columns(
+        MONTH=pl.lit(month),
+        YEAR=pl.lit(year),
+        YEAR_MONTH=pl.lit(100 * year + month)
     )
     return dataframe
 
-def add_hash_columns(data: PolarsLike, /, *, timestamp: Optional[str]=None, token: Optional[str]=None) -> pl.DataFrame:
+
+def add_hash_columns(data: PolarsLike, /, *, timestamp: Optional[datetime] = None, token: Optional[str] = None) -> pl.DataFrame:
     if timestamp is None:
         timestamp = generate_timestamp()
 
     if token is None:
         token = generate_timehex_token(4)
-    
+
     dataframe = transform_dataframe(data)
     dataframe = dataframe.with_columns(
-        pl.lit(timestamp).alias('CREATED_AT'),
-        pl.lit(token).alias('ID')
+        pl.lit(timestamp, dtype=pl.Datetime).alias('CREATED_AT'),
+        pl.lit(token, dtype=pl.String).alias('ID')
     )
     return dataframe
 
+
 def parse_compositions_cost_headers(header_rows: PolarsLike, /) -> list[str]:
     header = transform_dataframe(header_rows)
-    header = header.transpose(include_header=False, column_names=['HEAD_01', 'HEAD_02'] )
+    header = header.transpose(include_header=False, column_names=[
+                              'HEAD_01', 'HEAD_02'])
     header = forward_fill(header)
 
     head_01 = pl.col('HEAD_01')
     head_02 = pl.col('HEAD_02')
-    
+
     header = header.with_columns(
         replace_whitespaces(head_01).cast(pl.String),
         replace_whitespaces(head_02).cast(pl.String)
@@ -148,8 +153,9 @@ def parse_compositions_cost_headers(header_rows: PolarsLike, /) -> list[str]:
         lowercase_col(head_01).str.starts_with('indica'),
     )
     concat_headers = pl.concat_str(head_01, head_02, separator=';;')
-    concat_rule = pl.when(not_concat_condition).then(head_02).otherwise(concat_headers)
-    
+    concat_rule = pl.when(not_concat_condition).then(
+        head_02).otherwise(concat_headers)
+
     header = header.select(
         concat_rule.alias('HEADER')
     )
@@ -167,7 +173,7 @@ def parse_compositions_cost_headers(header_rows: PolarsLike, /) -> list[str]:
 def extract_materials_services_cost(data: PolarsLike, /) -> pl.DataFrame:
     dataframe = transform_dataframe(data)
     dataframe = transform_headers(dataframe, fill_whitespaces)
-    
+
     dataframe = dataframe.rename({
         'Classificação':        'GROUP',
         'Descrição_do_Insumo':  'DESCRIPTION',
@@ -203,8 +209,10 @@ def extract_materials_services_cost(data: PolarsLike, /) -> pl.DataFrame:
         })
     )
     dataframe = dataframe.with_columns(
-        map_elements('UF', MAP_STATE_NAME, return_dtype=pl.String, strict=True).alias('STATE'),
-        map_elements('UF', MAP_STATE_CITY, return_dtype=pl.String, strict=True).alias('CITY')
+        map_elements('UF', MAP_STATE_NAME, return_dtype=pl.String,
+                     strict=True).alias('STATE'),
+        map_elements('UF', MAP_STATE_CITY, return_dtype=pl.String,
+                     strict=True).alias('CITY')
     )
     dataframe = select_casting(dataframe, {
         'GROUP':        pl.String,
@@ -219,6 +227,7 @@ def extract_materials_services_cost(data: PolarsLike, /) -> pl.DataFrame:
         'VALUE':        pl.Float64
     })
     return dataframe
+
 
 def extract_compositions_cost(data: PolarsLike, /) -> pl.DataFrame:
     dataframe = transform_dataframe(data)
@@ -243,9 +252,9 @@ def extract_compositions_cost(data: PolarsLike, /) -> pl.DataFrame:
     parts = pl.col('COLUMN_NAME').str.split(';;', inclusive=False)
     state = parts.list[0]
     value_type = parts.list[1]
-    
+
     dataframe = dataframe.with_columns(
-        state.alias('UF'), 
+        state.alias('UF'),
         value_type.alias('VALUE_TYPE')
     )
     dataframe.drop('COLUMN_NAME')
@@ -260,8 +269,10 @@ def extract_compositions_cost(data: PolarsLike, /) -> pl.DataFrame:
         sanitize_text('VALUE')
     )
     dataframe = dataframe.with_columns(
-        map_elements('UF', MAP_STATE_NAME, return_dtype=pl.String, strict=True).alias('STATE'),
-        map_elements('UF', MAP_STATE_CITY, return_dtype=pl.String, strict=True).alias('CITY')
+        map_elements('UF', MAP_STATE_NAME, return_dtype=pl.String,
+                     strict=True).alias('STATE'),
+        map_elements('UF', MAP_STATE_CITY, return_dtype=pl.String,
+                     strict=True).alias('CITY')
     )
     dataframe = dataframe.with_columns(
         pl.col('VALUE').replace({
@@ -272,8 +283,7 @@ def extract_compositions_cost(data: PolarsLike, /) -> pl.DataFrame:
     return dataframe
 
 
-
-def load_materials_services_cost_ICD(year: int, month: int, /, *, timestamp: Optional[str]=None, token: Optional[str]=None) -> pl.DataFrame:
+def load_materials_services_cost_ICD(year: int, month: int, /, *, timestamp: Optional[datetime] = None, token: Optional[str] = None) -> pl.DataFrame:
     '''
     Loads materials and services cost data with reduced labor charges (ICD).
     Represents SINAPI costs with payroll tax reduction applied for construction pricing.
@@ -287,7 +297,8 @@ def load_materials_services_cost_ICD(year: int, month: int, /, *, timestamp: Opt
     dataframe = select_casting(dataframe, DATA_MODEL_MATERIALS_SERVICES)
     return dataframe
 
-def load_materials_services_cost_ISE(year: int, month: int, /, *, timestamp: Optional[str]=None, token: Optional[str]=None) -> pl.DataFrame:
+
+def load_materials_services_cost_ISE(year: int, month: int, /, *, timestamp: Optional[datetime] = None, token: Optional[str] = None) -> pl.DataFrame:
     '''
     Loads base materials and services cost data without social charges (ISE).
     Represents pure base SINAPI prices without labor or social costs included.
@@ -301,7 +312,8 @@ def load_materials_services_cost_ISE(year: int, month: int, /, *, timestamp: Opt
     dataframe = select_casting(dataframe, DATA_MODEL_MATERIALS_SERVICES)
     return dataframe
 
-def load_materials_services_cost_ISD(year: int, month: int, /, *, timestamp: Optional[str]=None, token: Optional[str]=None) -> pl.DataFrame:
+
+def load_materials_services_cost_ISD(year: int, month: int, /, *, timestamp: Optional[datetime] = None, token: Optional[str] = None) -> pl.DataFrame:
     '''
     Loads materials and services cost data with full labor charges (ISD).
     Represents SINAPI costs with complete social charges included in pricing.
@@ -315,7 +327,8 @@ def load_materials_services_cost_ISD(year: int, month: int, /, *, timestamp: Opt
     dataframe = select_casting(dataframe, DATA_MODEL_MATERIALS_SERVICES)
     return dataframe
 
-def load_compositions_cost_CSD(year: int, month: int, /, *, timestamp: Optional[str]=None, token: Optional[str]=None) -> pl.DataFrame:
+
+def load_compositions_cost_CSD(year: int, month: int, /, *, timestamp: Optional[datetime] = None, token: Optional[str] = None) -> pl.DataFrame:
     '''
     Loads construction composition cost data without payroll tax reduction (CSD).
     Represents SINAPI full service costs with complete labor and material charges included.
@@ -327,8 +340,9 @@ def load_compositions_cost_CSD(year: int, month: int, /, *, timestamp: Optional[
     dataframe = add_hash_columns(dataframe, timestamp=timestamp, token=token)
     dataframe = select_casting(dataframe, DATA_MODEL_COMPOSITIONS)
     return dataframe
-    
-def load_compositions_cost_CCD(year: int, month: int, /, *, timestamp: Optional[str]=None, token: Optional[str]=None) -> pl.DataFrame:
+
+
+def load_compositions_cost_CCD(year: int, month: int, /, *, timestamp: Optional[datetime] = None, token: Optional[str] = None) -> pl.DataFrame:
     '''
     Loads construction composition cost data with reduced labor charges (CCD).
     Represents SINAPI service costs with payroll tax reduction applied.
@@ -341,7 +355,8 @@ def load_compositions_cost_CCD(year: int, month: int, /, *, timestamp: Optional[
     dataframe = select_casting(dataframe, DATA_MODEL_COMPOSITIONS)
     return dataframe
 
-def load_compositions_cost_CSE(year: int, month: int, /, *, timestamp: Optional[str]=None, token: Optional[str]=None) -> pl.DataFrame:
+
+def load_compositions_cost_CSE(year: int, month: int, /, *, timestamp: Optional[datetime] = None, token: Optional[str] = None) -> pl.DataFrame:
     '''
     Loads base construction composition cost data without social charges (CSE).
     Represents pure SINAPI composition values without labor or social costs included.
@@ -353,4 +368,3 @@ def load_compositions_cost_CSE(year: int, month: int, /, *, timestamp: Optional[
     dataframe = add_hash_columns(dataframe, timestamp=timestamp, token=token)
     dataframe = select_casting(dataframe, DATA_MODEL_COMPOSITIONS)
     return dataframe
-

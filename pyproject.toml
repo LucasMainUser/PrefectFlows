@@ -14,7 +14,8 @@ dependencies = [
     "xlsxwriter==3.2.9",
     "psycopg[binary]==3.2.3",
     "python-dotenv==1.2.2",
-    "prefect==3.7.2"
+    "prefect==3.7.2",
+    "boto3>=1.43.30"
 ]
 
 [tool.setuptools]
