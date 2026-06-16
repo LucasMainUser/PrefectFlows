@@ -8,7 +8,7 @@ from prefect.variables import Variable
 from application.envtools import load_global_environment_prefect
 from core import Environment, extract_sinapi_data
 
-class FlowRunConfigurations(BaseModel):
+class RunConfigurations(BaseModel):
     start: str = Field(
         default=None, 
         title='Data Inicio', 
@@ -32,9 +32,9 @@ class FlowRunConfigurations(BaseModel):
 
 
 @flow
-def prefect_flow(configurations: Optional[FlowRunConfigurations]=None) -> State:
+def prefect_flow(configurations: Optional[RunConfigurations]=None) -> State:
     if configurations is None:
-        configurations = FlowRunConfigurations()
+        configurations = RunConfigurations()
     
     start = configurations.start
     finish = configurations.finish
