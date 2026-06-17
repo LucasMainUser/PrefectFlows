@@ -12,9 +12,12 @@ from typing import (
 from io import BytesIO
 from pathlib import Path
 from datetime import date
+
+from time import time
 from dataclasses import dataclass
 
 import polars as pl
+import prefect as pf
 
 from application.envtools import (
     SupportsGlobalEnvironment, 
@@ -25,7 +28,6 @@ from application.envtools import (
 from application.aws3 import S3Connection
 from application.tables import PolarsLike, transform_dataframe
 from application.utils import (
-    cache,
     type_name,
     generate_timestamp,
     generate_timehex_token,  
@@ -43,14 +45,11 @@ from data_models import (
 )
 from sinapi_api import is_available_sinapi_data, get_link_to_sinapi_table
 
-
-URLPATH_SEPARATOR:          str = '/'
 LOCAL_ENVIRONMENT_FILEPATH: str = '.env.local'
 
 
 class TableDefinition(NamedTuple):
     name: str
-
 
 def is_table_definition(value: Any, /) -> TypeGuard[TableDefinition]:
     return isinstance(value, TableDefinition)
@@ -70,15 +69,15 @@ class SINAPI_Tables:
         yield from filter(is_table_definition, vars(cls).values())
 
 
-class YearMonth(NamedTuple):
-    year: int
+class MonthYear(NamedTuple):
     month: int
+    year: int
     
     @property
     def display(self) -> str:
         return f'{self.month:02d}/{self.year}'
     
-    def shift(self, months: int, /) -> YearMonth:
+    def shift(self, months: int, /) -> MonthYear:
         total_months = (self.year * 12 + (self.month - 1)) + months
         
         if total_months < 0:
@@ -87,7 +86,7 @@ class YearMonth(NamedTuple):
         year = total_months // 12
         month = (total_months % 12) + 1
 
-        return YearMonth(year, month)
+        return MonthYear(month=month, year=year)
 
 @dataclass(slots=True, frozen=True)
 class Environment(SupportsGlobalEnvironment):
@@ -99,26 +98,26 @@ PathLike:           TypeAlias = str | Path
 Year:               TypeAlias = int
 Month:              TypeAlias = int
 LiteralMonthYear:   TypeAlias = str
-YearMonthLike:      TypeAlias = YearMonth | tuple[Year, Month] | LiteralMonthYear
+MonthYearLike:      TypeAlias = MonthYear | tuple[Month, Year] | LiteralMonthYear
 
 
 def with_schema(schema: str, name: str, /) -> str:
     return f'{schema}.{name}'
 
-def transform_year_month(data: YearMonthLike, /) -> YearMonth:
+def transform_month_year(data: MonthYearLike, /) -> MonthYear:
     jesus_birthday = 0
     january = 1
     december = 12
 
     if isinstance(data, tuple):
-        data = YearMonth(*map(int, data))
+        data = MonthYear(*map(int, data))
     
     if isinstance(data, str):
         month, year = data.split('/', maxsplit=1)
-        data = YearMonth(int(year), int(month))
+        data = MonthYear(month=int(month), year=int(year))
 
-    if not isinstance(data, YearMonth):
-        raise ValueError(f'Invalid year-month input of type {type_name(data)!r}')
+    if not isinstance(data, MonthYear):
+        raise ValueError(f'Invalid month-year input of type {type_name(data)!r}')
 
     if data.month < january:
         raise ValueError(f'Invalid month {data.month}. Month must be >= 1 (January).')
@@ -131,6 +130,7 @@ def transform_year_month(data: YearMonthLike, /) -> YearMonth:
 
     return data
 
+@pf.task
 def read_all_sinapi_tables(year: int, month: int, /, logger: Optional[LogFunction]=None) -> dict[TableDefinition, pl.DataFrame]:
     logger = resolve_logger(logger)
     logger(f'Loading SINAPI tables for {month:02d}/{year}.')
@@ -142,6 +142,8 @@ def read_all_sinapi_tables(year: int, month: int, /, logger: Optional[LogFunctio
     logger(f'SINAPI source link: {sinapi_link}')
 
     logger(f'Extracting for {month:02d}/{year}, this may take a while ...')
+
+    start = time()
     tables: dict[TableDefinition, pl.DataFrame] = {
         SINAPI_Tables.COMPOSITIONS_CCD: load_compositions_cost_CCD(year, month),
         SINAPI_Tables.COMPOSITIONS_CSD: load_compositions_cost_CSD(year, month),
@@ -150,11 +152,16 @@ def read_all_sinapi_tables(year: int, month: int, /, logger: Optional[LogFunctio
         SINAPI_Tables.MATERIALS_SERVICES_ISD: load_materials_services_cost_ISD(year, month),
         SINAPI_Tables.MATERIALS_SERVICES_ISE: load_materials_services_cost_ISE(year, month),
     }
-    count = len(tables)
+    elapsed_seconds = time() - start
 
+    logger(f'Extraction took {elapsed_seconds} seconds')
+
+    count = len(tables)
     logger(f'All {count} tables loaded successfully.')
+
     return tables
 
+@pf.task
 def fetch_sinapi_database(s3_connection: S3Connection, environment: Environment, /, logger: Optional[LogFunction]=None) -> dict[TableDefinition, pl.DataFrame]:
     logger = resolve_logger(logger)
     logger('Reading database from CloudFlare (S3-Service) parquet-files')
@@ -176,6 +183,7 @@ def fetch_sinapi_database(s3_connection: S3Connection, environment: Environment,
     logger('CloudFlare database ready!')
     return database
 
+@pf.task
 def insert_data(table: PolarsLike, definition: TableDefinition, database: Mapping[TableDefinition, PolarsLike], /) -> dict[TableDefinition, pl.DataFrame]:
     database = {
         key: transform_dataframe(data) for key, data in database.items() 
@@ -189,6 +197,7 @@ def insert_data(table: PolarsLike, definition: TableDefinition, database: Mappin
     ))
     return database
 
+@pf.task
 def mount_latests(tables: Mapping[TableDefinition, PolarsLike], /, logger: Optional[LogFunction]=None) -> dict[TableDefinition, pl.DataFrame]:
     logger = resolve_logger(logger)
     logger('Start mounting latests')
@@ -215,6 +224,7 @@ def mount_latests(tables: Mapping[TableDefinition, PolarsLike], /, logger: Optio
     logger('Finished mounting latest tables')
     return latests
 
+@pf.task
 def push_sinapi_database(s3_connection: S3Connection, environment: Environment, tables: Mapping[TableDefinition, PolarsLike], /, logger: Optional[LogFunction]=None) -> None:
     logger = resolve_logger(logger)
     logger('Start pushing sinapi database')
@@ -234,12 +244,13 @@ def push_sinapi_database(s3_connection: S3Connection, environment: Environment, 
     logger('Finished pushing sinapi database')
 
 
-def resolve_periods(start: YearMonthLike | None, finish: YearMonthLike | None, /, logger: Optional[LogFunction]=None) -> list[YearMonth]:
+@pf.task
+def resolve_periods(start: MonthYearLike | None, finish: MonthYearLike | None, /, logger: Optional[LogFunction]=None) -> list[MonthYear]:
     logger = resolve_logger(logger)
     
     if (start is None) or (finish is None):
         today = date.today()
-        current_month = YearMonth(year=today.year, month=today.month)
+        current_month = MonthYear(month=today.month, year=today.year)
         previous_month = current_month.shift(-1)
 
         logger(f'Start or finish month missing. Defaulting to previous month ({previous_month.display})')
@@ -247,15 +258,15 @@ def resolve_periods(start: YearMonthLike | None, finish: YearMonthLike | None, /
     
     logger('Resolving period range')
 
-    start  = transform_year_month(start)
-    finish = transform_year_month(finish)
+    start  = transform_month_year(start)
+    finish = transform_month_year(finish)
     
     if start > finish:
         raise ValueError(
             f'Invalid range: start ({start.display}) must be less than or equal to finish ({finish.display}).'
         )
     
-    output: list[YearMonth] = []
+    output: list[MonthYear] = []
     current = start
 
     while current <= finish:
@@ -266,6 +277,7 @@ def resolve_periods(start: YearMonthLike | None, finish: YearMonthLike | None, /
     logger(f'Resolved {count} periods from {start.display} to {finish.display}')
     return output
 
+@pf.task
 def resolve_environment(environment: Optional[Environment]=None, /, logger: Optional[LogFunction]=None) -> Environment:
     logger = resolve_logger(logger)
     logger('Resolving environment')
@@ -301,6 +313,7 @@ def resolve_environment(environment: Optional[Environment]=None, /, logger: Opti
     logger('Environment successfully resolved')
     return environment
 
+@pf.task
 def resolve_s3_connection(environment: Environment, logger: Optional[LogFunction]=None) -> S3Connection:
     logger = resolve_logger(logger)
     logger('Start resolving S3 connection')
@@ -314,8 +327,8 @@ def resolve_s3_connection(environment: Environment, logger: Optional[LogFunction
     return connection
 
 def extract_sinapi_data(
-        start: Optional[YearMonthLike]=None,
-        finish: Optional[YearMonthLike]=None,
+        start: Optional[MonthYearLike]=None,
+        finish: Optional[MonthYearLike]=None,
         environment: Optional[Environment]=None,
         logger: Optional[LogFunction]=None    
     ) -> None:
