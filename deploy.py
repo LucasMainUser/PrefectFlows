@@ -35,7 +35,7 @@ def main() -> None:
     github = GitRepository(url=GITHUB_REPOSITORY, branch='master')
     
     orders: list[DeploySpec] = [
-        DeploySpec('Extrair Dados SINAPI', flow_name='extrair_dados_sinapi', entrypoint=r'flows/extract_sinapi_database/main.py:prefect_flow', storage=github, paused=False, cron='0 6 28 * *')
+        DeploySpec('Extrair Dados Construção Civil', flow_name='extrair_dados_construcao_civil', entrypoint=r'flows/extract_construction_data/main.py:prefect_flow', storage=github, paused=False, cron='0 6 28 * *')
     ]
 
     deployments = map(to_prefect_deployment, orders)
