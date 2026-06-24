@@ -1,5 +1,6 @@
 artifacts
 tests
+build
 
 __pycache__
 
