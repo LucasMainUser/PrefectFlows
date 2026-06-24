@@ -5,23 +5,43 @@ from typing import (
     Optional,
     Callable, 
     Iterable,
-    Hashable
+    Hashable,
+    Literal,
+    Union,
+    overload
 )
 import polars as pl
 
-PolarsLike:     TypeAlias = Any
+from application.utils import type_name
+
+PolarsLike:     TypeAlias = Union[pl.DataFrame | pl.LazyFrame | Any]
 TargetValue:    TypeAlias = Any
 ColumnName:     TypeAlias = str
 
 DEFAULT = object()
 
-def transform_dataframe(data: PolarsLike, /) -> pl.DataFrame:
-    if isinstance(data, pl.DataFrame):
+@overload
+def transform_dataframe(data: pl.DataFrame, /, build_lazy: bool = ...) -> pl.DataFrame: ...
+@overload
+def transform_dataframe(data: pl.LazyFrame, /, build_lazy: bool = ...) -> pl.LazyFrame: ...
+@overload
+def transform_dataframe(data: Any, /, build_lazy: bool=...) -> pl.DataFrame | pl.LazyFrame: ...
+@overload
+def transform_dataframe(data: Any, /, build_lazy: Literal[False]=False) -> pl.DataFrame: ...
+@overload
+def transform_dataframe(data: Any, /, build_lazy: Literal[True]=True) -> pl.LazyFrame: ...
+
+def transform_dataframe(data: PolarsLike, /, build_lazy: bool=False) -> pl.DataFrame | pl.LazyFrame:
+    if isinstance(data, (pl.DataFrame, pl.LazyFrame) ):
         return data
     try:
-        return pl.DataFrame(data, schema=None)
+        factory = pl.LazyFrame if build_lazy else pl.DataFrame
+        return factory(data, schema=None)
     except Exception as error:
-        raise RuntimeError('...') from error
+        raise RuntimeError(
+            f'Failed to convert input of type {type_name(data)!r} to Polars Dataframe'
+        ) from error
+
 
 def to_expr(data: pl.Expr | ColumnName, /) -> pl.Expr:
     if isinstance(data, pl.Expr):
@@ -148,14 +168,26 @@ def map_elements(
         if strict:
             return mapper[key]
         return mapper.get(key, default)
-
+    
     return to_expr(column).map_elements(map_rule, return_dtype=return_dtype, skip_nulls=skip_nulls)
 
+def drop_header_rows(data: PolarsLike, /) -> pl.DataFrame:
+    dataframe = transform_dataframe(data)
+    condition = pl.all_horizontal([
+        pl.col(column) == column for column in dataframe.columns
+    ])
+    return dataframe.filter(~condition)
 
-def nullify(column: pl.Expr | ColumnName, conditions: pl.Expr | Iterable[pl.Expr], /) -> pl.Expr:
+def cast_decimal_comma_to_float(column: ColumnName | pl.Expr, /) -> pl.Expr:
+    return to_expr(column).str.replace_all(r'\.', '').str.replace_all(r',', '.').cast(pl.Float64)
+
+def nullify_when(column: pl.Expr | ColumnName, conditions: pl.Expr | Iterable[pl.Expr], /) -> pl.Expr:
     column = to_expr(column)
     mask = any_of(conditions)
     return pl.when(mask).then(None).otherwise(column)
+
+def nullify_cases(column: pl.Expr | ColumnName, *values: Any, return_dtype: Optional[pl.DataType]=None) -> pl.Expr:
+    return to_expr(column).replace(values, None, return_dtype=return_dtype)
 
 def conditional_replace(column: pl.Expr | ColumnName, conditions: pl.Expr | Iterable[pl.Expr], /, fallback: Optional[Any]=None) -> pl.Expr:
     column = to_expr(column)
