@@ -33,7 +33,7 @@ class RunConfigurations(BaseModel):
         default=False,  
         title='Apenas Atualizar Ultimos', 
         description=(
-            'Quando ativado, apenas atualiza os registros mais atuais.' 
+            'Quando ativado, apenas atualiza os registros mais atuais. ' 
             'Não realiza extração de dados do SINAPI, apenas utiliza os dados ja existentes.'
         )
     )
@@ -79,7 +79,7 @@ def main() -> None:
     finish='05/2026'
     update_latest_only = True
 
-    prefect_flow(
+    extract_construction_data(
         start=start, 
         finish=finish,
         update_latest_only=update_latest_only,
